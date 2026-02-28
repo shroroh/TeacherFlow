@@ -155,18 +155,21 @@ class KnowledgeToDiscover(BatchNode):
             raise ValueError("Missing 'student_profile' or 'learning_priority' in shared data")
         use_cache = shared.get("use_cache", True)
         max_topics = shared.get("max_topics", 10)
-        # save limit on the node instance for later
+        # Save on instance for use in exec()
+        self._student_profile = student_profile
+        self._use_cache = use_cache
         self._max_topics = max_topics
-        return student_profile, use_cache, max_topics, learning_priority
+        # Return the iterable (list of subjects)
+        return learning_priority
 
-    def batch(self, subject_entry, prep_res):
-        student_profile, use_cache, max_topics, learning_priority = prep_res
+    def exec(self, subject_entry):
+        # subject_entry is one item from the learning_priority list
         subj = subject_entry if isinstance(subject_entry, str) else subject_entry.get("subject")
         print(f"Generating knowledge suggestions for '{subj}'...")
 
         prompt = f"""
 You are an AI tutor. The student's profile is shown below:
-{student_profile}
+{self._student_profile}
 
 Subject: {subj}
 
@@ -189,29 +192,28 @@ knowledge_to_discover:
         based_from: "..."
 ```"""
 
-        response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0))
+        response = call_llm(prompt, use_cache=(self._use_cache and self.cur_retry == 0))
         match = re.search(r"```yaml(.*?)```", response, re.DOTALL)
         if not match:
             raise ValueError(f"No YAML block found in LLM output for subject {subj}")
         yaml_str = match.group(1).strip()
-        return yaml.safe_load(yaml_str)
+        result = yaml.safe_load(yaml_str)
+        # Return None if no valid result, so we can skip it in post()
+        return result if result else None
 
-    def exec(self, batch_results):
+    def post(self, shared, prep_res, exec_res_list):
+        # exec_res_list is the list of results from each exec() call
         topics = []
-        for item in batch_results:
+        for item in exec_res_list:
             if not item:
                 continue
             if isinstance(item, dict) and "knowledge_to_discover" in item:
                 topics.extend(item["knowledge_to_discover"])
             elif isinstance(item, dict):
                 topics.append(item)
-        max_topics = getattr(self, '_max_topics', None)
-        if max_topics is not None:
-            topics = topics[:max_topics]
-        return {"knowledge_to_discover": topics}
-
-    def post(self, shared, prep_res, exec_res):
-        shared["knowledge_to_discover"] = exec_res
+        if self._max_topics is not None:
+            topics = topics[:self._max_topics]
+        shared["knowledge_to_discover"] = {"knowledge_to_discover": topics}
         print("Knowledge topics and subtopics stored in shared['knowledge_to_discover']." )
 
 
