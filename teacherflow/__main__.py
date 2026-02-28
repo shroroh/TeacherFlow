@@ -1,4 +1,6 @@
-from .main import main
+"""Allow running as: python -m teacherflow"""
+
+from ._cli import main
 
 
 if __name__ == "__main__":

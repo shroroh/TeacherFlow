@@ -1,8 +1,11 @@
-"""Entry point kept at project root for backward compatibility.
-Delegates to the package implementation in :mod:`teacherflow.main`.
+"""Entry point for TeacherFlow - generate personalized teacher feedback.
+
+Usage:
+    python main.py --student-id ivan123
+    python -m teacherflow --student-id ivan123
 """
 
-from teacherflow.main import main
+from teacherflow._cli import main
 
 
 if __name__ == "__main__":
