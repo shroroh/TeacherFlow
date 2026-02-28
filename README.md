@@ -28,10 +28,14 @@
    $env:GEMINI_MODEL="gemini-flash-latest"
    ```
 
-4. Excute main.py
- ```bash
- python main.py --student-id ivan123 --no-cache
- ```
+3. Execute the script (either from root or as a package)
+```bash
+# legacy entry point kept at project root
+python main.py --student-id ivan123 --no-cache
+
+# or use the package namespace
+python -m teacherflow --student-id ivan123 --no-cache
+```
 
 ## Deploy and launch on Colaba service
  ```bash
