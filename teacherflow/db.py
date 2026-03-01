@@ -21,24 +21,6 @@ class Database:
                 }
             },
             {
-                "Full Name": "Dmitriy Turutin",
-                "Login": "dmitriy",
-                "Password": "asdfasdfasdf",
-                "Marks and exams": {
-                    "Math": [4],
-                    "Fundamentals of Russian Statehood": [4],
-                    "English": [4],
-                    "History": [3],
-                    "Informatics": [5],
-                    "Programming": [5],
-                    "Philosophy": [5]
-                },
-                "Personal": {
-                    "Class": 9,
-                    "Bio": "Люблю математику и физику, играю в шахматы на уровне любителя."
-                }
-            },
-            {
                 "Full Name": "Мария Петрова",
                 "Login": "maria123",
                 "Password": "maria",
