@@ -198,11 +198,29 @@ knowledge_to_discover:
             raise ValueError(f"No YAML block found in LLM output for subject {subj}")
         yaml_str = match.group(1).strip()
         result = yaml.safe_load(yaml_str)
-        # Return None if no valid result, so we can skip it in post()
-        return result if result else None
+        # Sometimes the LLM returns a bare boolean (e.g. `false`) or an unexpected
+        # type; that causes batch handling to blow up later with a TypeError.
+        # We'll treat non-dict results as "no data" so they get skipped.
+        if isinstance(result, bool):
+            # log a warning so it's easier to debug later
+            print(f"Warning: LLM returned a boolean for subject '{subj}', skipping.")
+            return None
+        if not result or not isinstance(result, dict):
+            # Defensive in case YAML was empty or a list, string, etc.
+            print(f"Warning: unexpected LLM output for subject '{subj}': {result!r}, skipping.")
+            return None
+        # Return the valid dictionary result
+        return result
 
     def post(self, shared, prep_res, exec_res_list):
-        # exec_res_list is the list of results from each exec() call
+        # exec_res_list is supposed to be a list of results from each exec() call.
+        # Add defensive checks in case something went wrong and we got a bool
+        # or other non-iterable through from the batch runner.
+        if not isinstance(exec_res_list, list):
+            raise TypeError(
+                f"BatchNode.post expected a list of results but got {type(exec_res_list)}: {exec_res_list!r}"
+            )
+
         topics = []
         for item in exec_res_list:
             if not item:

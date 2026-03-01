@@ -158,23 +158,45 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
     return response_text
 
 
+from google.auth.exceptions import DefaultCredentialsError
+
+
 def _call_llm_gemini(prompt: str) -> str:
-    if os.getenv("GEMINI_PROJECT_ID"):
-        client = genai.Client(
-            vertexai=True,
-            project=os.getenv("GEMINI_PROJECT_ID"),
-            location=os.getenv("GEMINI_LOCATION", "us-central1")
+    # The Gemini client will attempt to obtain Google Application Default
+    # Credentials (ADC) if only a project ID is provided.  If ADC are not
+    # configured we end up deep in google.auth raising a
+    # DefaultCredentialsError that surfaces as a confusing stack trace.  The
+    # CLI retries the node several times, printing the prompt each attempt.
+    #
+    # Detect this situation early and raise a helpful error message instead.
+    try:
+        # Prefer an explicit API key when available (avoids requiring ADC).
+        if os.getenv("GEMINI_API_KEY"):
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        elif os.getenv("GEMINI_PROJECT_ID"):
+            client = genai.Client(
+                vertexai=True,
+                project=os.getenv("GEMINI_PROJECT_ID"),
+                location=os.getenv("GEMINI_LOCATION", "us-central1")
+            )
+        else:
+            raise ValueError("Either GEMINI_PROJECT_ID or GEMINI_API_KEY must be set in the environment")
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25")
+        response = client.models.generate_content(
+            model=model,
+            contents=[prompt]
         )
-    elif os.getenv("GEMINI_API_KEY"):
-        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    else:
-        raise ValueError("Either GEMINI_PROJECT_ID or GEMINI_API_KEY must be set in the environment")
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25")
-    response = client.models.generate_content(
-        model=model,
-        contents=[prompt]
-    )
-    return response.text
+        return response.text
+    except DefaultCredentialsError as exc:
+        # Wrap with a more user-friendly message about credentials.
+        raise RuntimeError(
+            "Failed to authenticate with Gemini: application default "
+            "credentials were not found.\n"
+            "You can either set GEMINI_API_KEY on the environment or "
+            "configure ADC by running `gcloud auth application-default login` "
+            "or by setting GOOGLE_APPLICATION_CREDENTIALS to a service-account "
+            "JSON file. See docs: https://cloud.google.com/docs/authentication/external/set-up-adc"
+        ) from exc
 
 if __name__ == "__main__":
     test_prompt = "greetings!"

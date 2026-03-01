@@ -7,6 +7,18 @@
 
 ## 🚀 Getting Started
 
+### 🧪 Running Tests
+
+A minimal test suite is provided under `tests/`.
+Install the testing dependency and run:
+
+```bash
+pip install -r requirements.txt  # includes pytest now
+python -m pytest -q
+```
+
+
+
 1. Clone this repository
    ```bash
    git clone https://github.com/shroroh/TeacherFlow-.git
@@ -17,7 +29,20 @@
    pip install -r requirements.txt
    ```
 
-3. Set up LLM in [`utils/call_llm.py`](./utils/call_llm.py) by providing credentials. To do so, you can put the values in a `.env` file. By default, you can use the AI Studio key with this client for Gemini Pro 2.5 by setting the `GEMINI_API_KEY` environment variable. If you want to use another LLM, you can set the `LLM_PROVIDER` environment variable (e.g. `XAI`), and then set the model, url, and API key (e.g. `XAI_MODEL`, `XAI_URL`,`XAI_API_KEY`). If using Ollama, the url is `http://localhost:11434/` and the API key can be omitted.
+3. Set up LLM in [`utils/call_llm.py`](./utils/call_llm.py) by providing credentials. To do so, you can put the values in a `.env` file. By default, you can use the AI Studio key with this client for Gemini Pro 2.5 by setting the `GEMINI_API_KEY` environment variable. Alternately, you may supply a project ID (`GEMINI_PROJECT_ID`) and rely on Google Application Default Credentials (ADC). **If ADC are not configured you will see an error like**:
+
+```
+google.auth.exceptions.DefaultCredentialsError: Your default credentials were not found.
+```
+
+To fix this either:
+
+1. Set `GEMINI_API_KEY` instead of project‑based auth.
+2. Run `gcloud auth application-default login` or set `GOOGLE_APPLICATION_CREDENTIALS` to
+   a service account JSON file as described in
+   https://cloud.google.com/docs/authentication/external/set-up-adc
+
+If you want to use another LLM, you can set the `LLM_PROVIDER` environment variable (e.g. `XAI`), and then set the model, url, and API key (e.g. `XAI_MODEL`, `XAI_URL`,`XAI_API_KEY`). If using Ollama, the url is `http://localhost:11434/` and the API key can be omitted.
    You can use your own models. We highly recommend the latest models with thinking capabilities (Claude 3.7 with thinking, O1). You can verify that it is correctly set up by running:
    ```bash
    python utils/call_llm.py

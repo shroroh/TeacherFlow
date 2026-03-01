@@ -1,9 +1,16 @@
 import dotenv
+import os
+from pathlib import Path
 import argparse
 from teacherflow.db import Database
 from teacherflow.flow import create_teacher_flow
 
-dotenv.load_dotenv()
+# Load variables from `.var` (project-specific) if it exists, then fallback to default `.env`.
+var_path = Path(".var")
+if var_path.exists():
+    dotenv.load_dotenv(dotenv_path=str(var_path), override=False)
+# Also load default .env (won't override existing variables)
+dotenv.load_dotenv(override=False)
 
 
 def main():
