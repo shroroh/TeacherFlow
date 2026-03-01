@@ -1,11 +1,67 @@
 import os
 import re
+import json
 import yaml
 from pocketflow import Node, BatchNode
 from teacherflow.utils.call_llm import call_llm
 from teacherflow.db import Database
 import markdown
 from IPython.display import display, HTML
+import html
+
+
+def _parse_structured_response(response, context_desc="response"):
+    """Try to parse a structured payload from LLM `response`.
+
+    Order of attempts:
+    1. Fenced ```json ... ``` block
+    2. Fenced ```yaml ... ``` block
+    3. First JSON object substring found in the text
+    4. Parse entire response as JSON
+    5. Parse entire response as YAML
+
+    Returns parsed Python object (usually dict/list) or raises ValueError.
+    """
+    # 1) fenced JSON
+    m = re.search(r"```json(.*?)```", response, re.DOTALL)
+    if m:
+        s = m.group(1).strip()
+        try:
+            return json.loads(s)
+        except Exception as e:
+            raise ValueError(f"Failed to parse fenced JSON for {context_desc}: {e}")
+
+    # 2) fenced YAML
+    m = re.search(r"```yaml(.*?)```", response, re.DOTALL)
+    if m:
+        s = m.group(1).strip()
+        try:
+            return yaml.safe_load(s)
+        except Exception as e:
+            raise ValueError(f"Failed to parse fenced YAML for {context_desc}: {e}")
+
+    # 3) first JSON object in text
+    m = re.search(r"\{[\s\S]*\}", response)
+    if m:
+        s = m.group(0)
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+
+    # 4) entire response as JSON
+    try:
+        return json.loads(response)
+    except Exception:
+        pass
+
+    # 5) entire response as YAML
+    try:
+        return yaml.safe_load(response)
+    except Exception:
+        pass
+
+    raise ValueError(f"No structured JSON/YAML found in LLM {context_desc}")
 
 
 # Node 1 - AppriseStudentGrades - Results of person
@@ -40,30 +96,28 @@ For EACH subject (up to {max_subjects}):
 2. Provide reasoning in 1-3 sentences.
 3. Identify main strengths and gaps.
 
-Output STRICTLY in YAML format:
+Output STRICTLY in JSON format, wrapped inside a fenced code block for easy parsing:
 
-```yaml
-student_profile:
-  subjects:
-    - name: ""
-      level: ""
-      reasoning: |
-        ...
-      strengths:
-        - ""
-      gaps:
-        - ""
+```json
+{{
+  "student_profile": {{
+    "subjects": [
+      {{
+        "name": "",
+        "level": "",
+        "reasoning": "",
+        "strengths": [""],
+        "gaps": [""]
+      }}
+    ]
+  }}
+}}
 ```"""
 
         response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0))
 
-        # --- Extract YAML safely ---
-        match = re.search(r"```yaml(.*?)```", response, re.DOTALL)
-        if not match:
-            raise ValueError("No YAML block found in LLM output")
-        yaml_str = match.group(1).strip()
-
-        profile = yaml.safe_load(yaml_str)
+        # --- Extract JSON safely ---
+        profile = _parse_structured_response(response, context_desc="student profile")
         if "student_profile" not in profile:
             raise ValueError("Missing 'student_profile' key in LLM output.")
         return profile
@@ -107,25 +161,24 @@ Task:
    - Strengths: Should not reduce priority if gaps exist
 3. Provide reasoning for the order in 1-3 sentences.
 
-Output STRICTLY in YAML format:
+Output STRICTLY in JSON format:
 
-```yaml
-learning_priority:
-  - subject: ""
-    priority: 1
-    reasoning: |
-      ...
+```json
+{{
+  "learning_priority": [
+    {{
+      "subject": "",
+      "priority": 1,
+      "reasoning": ""
+    }}
+  ]
+}}
 ```"""
 
         response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0))
 
-        # --- Extract YAML safely ---
-        match = re.search(r"```yaml(.*?)```", response, re.DOTALL)
-        if not match:
-            raise ValueError("No YAML block found in LLM output")
-        yaml_str = match.group(1).strip()
-
-        priority_list = yaml.safe_load(yaml_str)
+        # --- Extract JSON safely ---
+        priority_list = _parse_structured_response(response, context_desc="learning priority")
 
         if "learning_priority" not in priority_list or not isinstance(priority_list["learning_priority"], list):
             raise ValueError("Missing or invalid 'learning_priority' in LLM output.")
@@ -180,24 +233,24 @@ Task:
     * 2–3 practical examples
     * 2–5 subtopics with their own reason/source
 
-Return a YAML block in markdown fences similar to:
-```yaml
-knowledge_to_discover:
-  - topic: "..."
-    based_from: "..."
-    examples:
-      - "..."
-    subtopics:
-      - name: "..."
-        based_from: "..."
+Return a JSON block in markdown fences similar to:
+```json
+{{
+  "knowledge_to_discover": [
+    {{
+      "topic": "...",
+      "based_from": "...",
+      "examples": ["..."],
+      "subtopics": [
+        {{"name": "...", "based_from": "..."}}
+      ]
+    }}
+  ]
+}}
 ```"""
 
         response = call_llm(prompt, use_cache=(self._use_cache and self.cur_retry == 0))
-        match = re.search(r"```yaml(.*?)```", response, re.DOTALL)
-        if not match:
-            raise ValueError(f"No YAML block found in LLM output for subject {subj}")
-        yaml_str = match.group(1).strip()
-        result = yaml.safe_load(yaml_str)
+        result = _parse_structured_response(response, context_desc=f"knowledge_to_discover for subject {subj}")
         # Sometimes the LLM returns a bare boolean (e.g. `false`) or an unexpected
         # type; that causes batch handling to blow up later with a TypeError.
         # We'll treat non-dict results as "no data" so they get skipped.
@@ -235,6 +288,285 @@ knowledge_to_discover:
         print("Knowledge topics and subtopics stored in shared['knowledge_to_discover']." )
 
 
+# New Node: OralQuestionGenerator - generate a short list of oral questions
+# --------------------------------------------------------
+class OralQuestionGenerator(Node):
+    """Generate a list of short, oral-style questions for the student.
+
+    The number of questions can be provided via `shared['oral_num_questions']`.
+    Results are stored in `shared['oral_questions']` as a simple dict:
+      {"oral_questions": ["q1", "q2", ...]}
+    """
+
+    def prep(self, shared):
+        self._no_oral = shared.get("no_oral", False)
+        if self._no_oral:
+            return None, None, None
+        self.student_profile = shared.get("student_profile")
+        self.learning_priority = shared.get("learning_priority", {}).get("learning_priority", [])
+        self.num_questions = int(shared.get("oral_num_questions", 5))
+        self.use_cache = shared.get("use_cache", True)
+        if not self.student_profile:
+            raise ValueError("Missing 'student_profile' in shared data for OralQuestionGenerator")
+        return self.student_profile, self.learning_priority, self.num_questions
+
+    def exec(self, prep_res):
+        if self._no_oral:
+            return {"oral_questions": []}
+        student_profile, learning_priority, num_questions = prep_res
+        print(f"Generating {num_questions} oral-style questions based on student's profile...")
+
+        prompt = f"""
+You are an educational assistant. Given the student's profile and prioritized subjects, create {num_questions} short oral questions in Russian that a teacher might ask a student standing in front of them.
+
+Student profile:
+{student_profile}
+
+Learning priority:
+{learning_priority}
+
+Requirements:
+- Produce exactly {num_questions} distinct, concise questions (one sentence each).
+- Questions should be varied: recall, explanation, short problem, opinion/reflection.
+- Output STRICTLY in JSON fenced block as:
+```json
+{{
+  "oral_questions": [
+    "...",
+    "..."
+  ]
+}}
+```
+"""
+
+        response = call_llm(prompt, use_cache=(self.use_cache and getattr(self, "cur_retry", 0) == 0))
+        result = _parse_structured_response(response, context_desc="oral questions")
+        if not result or "oral_questions" not in result:
+            raise ValueError("LLM did not return 'oral_questions' list")
+        return result
+
+    def post(self, shared, prep_res, exec_res):
+        shared["oral_questions"] = exec_res
+        print("Oral questions stored in shared['oral_questions'].")
+
+
+# New Node: SimulateOralAnswers - batch-simulate student's answers
+# --------------------------------------------------------
+class SimulateOralAnswers(BatchNode):
+    """For each question, generate a short student-style answer using profile/context.
+
+    Stores results in `shared['oral_qa']` as:
+      {"oral_qa": [{"question": q, "answer": a, "notes": ...}, ...]}
+    """
+
+    def prep(self, shared):
+        self._no_oral = shared.get("no_oral", False)
+        if self._no_oral:
+            return []
+        oral_questions = shared.get("oral_questions", {}).get("oral_questions")
+        if not oral_questions:
+            oral_questions = shared.get("oral_questions")
+        if not oral_questions:
+            raise ValueError("Missing 'oral_questions' in shared data for SimulateOralAnswers")
+        self.student_data = shared.get("student_data")
+        self.student_profile = shared.get("student_profile")
+        self._use_cache = shared.get("use_cache", True)
+        return oral_questions
+
+    def exec(self, question):
+        if self._no_oral:
+            return None
+        print(f"Generating student answer for question: {question}")
+        prompt = f"""
+You are simulating how the student would answer a short oral question in front of a teacher.
+
+Student data:
+{self.student_data}
+
+Student profile:
+{self.student_profile}
+
+Question: {question}
+
+Requirements:
+- Answer in 1-3 short sentences, natural spoken style in Russian.
+- Be concise and honest about potential gaps (if the student likely doesn't know, provide a short attempted answer and a short note).
+- Output STRICTLY in JSON fenced block:
+```json
+{{
+  "qa": {{
+    "question": "...",
+    "answer": "...",
+    "note": "optional short note"
+  }}
+}}
+```"""
+
+        response = call_llm(prompt, use_cache=(self._use_cache and getattr(self, "cur_retry", 0) == 0))
+        try:
+            result = _parse_structured_response(response, context_desc=f"qa for question {question}")
+        except ValueError:
+            # Fallback: return the raw answer text as a simple dict
+            return {"qa": {"question": question, "answer": response.strip()}}
+        # Normalize to expected structure
+        if isinstance(result, dict) and "qa" in result:
+            qa = result["qa"]
+            # Ensure question field present
+            if "question" not in qa:
+                qa["question"] = question
+            return {"qa": qa}
+        # Otherwise, return fallback
+        return {"qa": {"question": question, "answer": str(result)}}
+
+    def post(self, shared, prep_res, exec_res_list):
+        if not isinstance(exec_res_list, list):
+            raise TypeError("Expected list of results from batch execution for SimulateOralAnswers")
+        qa_list = []
+        for item in exec_res_list:
+            if not item:
+                continue
+            if isinstance(item, dict) and "qa" in item:
+                qa_list.append(item["qa"])
+            elif isinstance(item, dict):
+                qa_list.append(item)
+            else:
+                qa_list.append({"question": None, "answer": str(item)})
+        shared["oral_qa"] = {"oral_qa": qa_list}
+        print("Oral Q&A stored in shared['oral_qa'].")
+
+
+class OralAssessment(Node):
+    """Analyze the simulated oral answers to produce a short assessment
+
+    Outputs `shared['oral_assessment']` as a dict, e.g.:
+      {"oral_assessment": {"summary": "...", "adjustments": [...]}}
+    """
+
+    def prep(self, shared):
+        self._no_oral = shared.get("no_oral", False)
+        if self._no_oral:
+            return None, None, None
+        self.oral_qa = shared.get("oral_qa")
+        self.student_profile = shared.get("student_profile")
+        self.student_data = shared.get("student_data")
+        self.use_cache = shared.get("use_cache", True)
+        if not self.oral_qa:
+            raise ValueError("Missing 'oral_qa' in shared data for OralAssessment")
+        return self.oral_qa, self.student_profile, self.student_data
+
+    def exec(self, prep_res):
+        if self._no_oral:
+            return {"oral_assessment": {"summary": "Oral disabled", "adjustments": []}}
+        oral_qa, student_profile, student_data = prep_res
+        # Build prompt asking LLM to analyze spoken answers and suggest any changes
+        prompt = f"""
+You are an experienced teacher. You received a set of short oral Q&A exchanges between a teacher and a student, plus the student's profile.
+
+Student data:
+{student_data}
+
+Student profile:
+{student_profile}
+
+Oral Q&A (list of question/answer pairs):
+{oral_qa}
+
+Task:
+- Provide a concise summary (2-4 sentences) of the student's oral performance: clarity, correctness, confidence, major misconceptions.
+- Suggest up to 3 concrete adjustments to the student's profile/priority that should be made based on the oral answers (format: subject, suggested change, short reason).
+
+Return STRICTLY in a YAML fenced block like:
+```yaml
+oral_assessment:
+  summary: "..."
+  adjustments:
+    - subject: "..."
+      change: "increase|decrease|note"
+      reason: "..."
+```
+"""
+
+        response = call_llm(prompt, use_cache=(self.use_cache and getattr(self, "cur_retry", 0) == 0))
+        result = _parse_structured_response(response, context_desc="oral assessment")
+        if not result or "oral_assessment" not in result:
+            raise ValueError("LLM did not return 'oral_assessment'")
+        return result
+
+    def post(self, shared, prep_res, exec_res):
+        shared["oral_assessment"] = exec_res
+        print("Oral assessment stored in shared['oral_assessment'].")
+
+        # Apply adjustments to student_profile and learning_priority
+        try:
+            adjustments = exec_res.get("oral_assessment", {}).get("adjustments", [])
+            if adjustments:
+                # Update student_profile: add oral_adjustments notes per subject
+                sp = shared.get("student_profile")
+                if sp and isinstance(sp, dict):
+                    # student_profile structure expected: {'student_profile': {'subjects': [...]}}
+                    subjects = None
+                    if "student_profile" in sp and isinstance(sp["student_profile"], dict):
+                        subjects = sp["student_profile"].get("subjects")
+                    elif isinstance(sp.get("subjects"), list):
+                        subjects = sp.get("subjects")
+
+                    if subjects and isinstance(subjects, list):
+                        for adj in adjustments:
+                            subj = adj.get("subject")
+                            change = adj.get("change")
+                            reason = adj.get("reason")
+                            if not subj:
+                                continue
+                            for s in subjects:
+                                name = s.get("name")
+                                if name and name.strip().lower() == subj.strip().lower():
+                                    notes = s.setdefault("oral_adjustments", [])
+                                    notes.append({"change": change, "reason": reason})
+
+                # Update learning_priority: adjust numeric priorities
+                lp = shared.get("learning_priority", {}).get("learning_priority", [])
+                if isinstance(lp, list) and lp:
+                    # Build lookup
+                    subj_map = {entry.get("subject"): entry for entry in lp if isinstance(entry, dict)}
+                    # Compute current max priority
+                    current_priorities = [int(entry.get("priority", 9999)) for entry in lp if isinstance(entry, dict)]
+                    max_priority = max(current_priorities) if current_priorities else len(lp)
+                    for adj in adjustments:
+                        subj = adj.get("subject")
+                        change = (adj.get("change") or "").lower()
+                        if not subj:
+                            continue
+                        # find matching entry (case-insensitive)
+                        found = None
+                        for entry in lp:
+                            if isinstance(entry, dict) and entry.get("subject") and entry.get("subject").strip().lower() == subj.strip().lower():
+                                found = entry
+                                break
+                        if found:
+                            try:
+                                p = int(found.get("priority", max_priority))
+                            except Exception:
+                                p = max_priority
+                            if change == "increase":
+                                p = max(1, p - 1)
+                            elif change == "decrease":
+                                p = p + 1
+                            found["priority"] = p
+                        else:
+                            # add new entry at lower priority (end)
+                            lp.append({"subject": subj, "priority": max_priority + 1, "reasoning": f"Added from oral assessment: {adj.get('reason')}"})
+                            max_priority += 1
+
+                    # normalize priorities (1..n) based on current numeric sort
+                    lp_sorted = sorted([e for e in lp if isinstance(e, dict)], key=lambda x: int(x.get("priority", 9999)))
+                    for idx, entry in enumerate(lp_sorted, start=1):
+                        entry["priority"] = idx
+                    shared["learning_priority"] = {"learning_priority": lp_sorted}
+        except Exception:
+            # Do not let adjustment errors break the flow; log simple message
+            print("Warning: failed to apply oral_assessment adjustments to shared profile/priorities.")
+
+
 class FinalTeacherConclusion(Node):
     """
     Generates a complete teacher conclusion and saves as HTML using Markdown rendering.
@@ -245,16 +577,27 @@ class FinalTeacherConclusion(Node):
             shared["student_data"],
             shared["student_profile"],
             shared["learning_priority"],
-            shared["knowledge_to_discover"],
+            shared.get("knowledge_to_discover"),
+            shared.get("oral_qa"),
             shared.get("output_dir", "output"),
             shared.get("use_cache", True),
+            shared.get("oral_assessment"),
+            shared.get("no_oral", False),
         )
 
     def exec(self, prep_res):
-        student_data, profile, priority, plan, output_dir, use_cache = prep_res
+        student_data, profile, priority, plan, oral_qa, output_dir, use_cache, oral_assessment, no_oral = prep_res
 
         name = student_data.get("Full Name", "ученик")
-        grade = student_data.get("Class", "N/A")
+        # if course is set, use course/major instead of school class
+        if student_data.get("Course"):
+            course = student_data.get("Course")
+            major = student_data.get("Major")
+            grade = f"курс {course}"
+            if major:
+                grade += f", направление {major}"
+        else:
+            grade = student_data.get("Class", "N/A")
 
         # ---- Prompt ----
         prompt = f"""
@@ -272,9 +615,21 @@ class FinalTeacherConclusion(Node):
 Учебный план:
 {plan}
 
+Устная сессия (вопросы и ответы):
+{oral_qa if oral_qa else 'Нет устной сессии.'}
+
 Составьте итоговое заключение на русском языке в Markdown,
 с заголовками, списками, таблицами и отступами.
 """
+
+        # Optionally include oral assessment
+        if not no_oral and oral_assessment and isinstance(oral_assessment, dict):
+            try:
+                oa_summary = oral_assessment.get("oral_assessment", {}).get("summary")
+                if oa_summary:
+                    prompt += f"\n\nУстная оценка (краткое резюме):\n{oa_summary}\n\nУчтите это при составлении заключения."
+            except Exception:
+                pass
 
         # ---- Вызов LLM ----
         text = call_llm(prompt, use_cache=(use_cache and getattr(self, "cur_retry", 0) == 0))
@@ -285,6 +640,53 @@ class FinalTeacherConclusion(Node):
 
         # ---- Markdown -> HTML ----
         html_body = markdown.markdown(text, extensions=['tables', 'fenced_code'])
+        dialog_html = ""
+        try:
+            dialog_md = ""
+            dialog_text = ""
+            if no_oral:
+                entries = []
+            elif oral_qa and isinstance(oral_qa, dict):
+                entries = oral_qa.get("oral_qa", [])
+            else:
+                entries = []
+            for item in entries:
+                q = item.get("question") if isinstance(item, dict) else None
+                a = item.get("answer") if isinstance(item, dict) else None
+                note = item.get("note") if isinstance(item, dict) else None
+                if q:
+                    dialog_md += f"**Учитель:** {q}\n\n"
+                    dialog_text += f"Учитель: {q}\n"
+                if a:
+                    dialog_md += f"**Ученик:** {a}\n\n"
+                    dialog_text += f"Ученик: {a}\n"
+                if note:
+                    dialog_md += f"_Примечание:_ {note}\n\n"
+                    dialog_text += f"Примечание: {note}\n"
+                dialog_md += "---\n\n"
+                dialog_text += "\n"
+
+            if dialog_md:
+                os.makedirs(output_dir, exist_ok=True)
+                dialog_txt_file = os.path.join(output_dir, f"{safe_name}_oral_dialog.txt")
+                with open(dialog_txt_file, "w", encoding="utf-8") as dtf:
+                    dtf.write(dialog_text)
+                # also save Markdown source
+                dialog_md_file = os.path.join(output_dir, f"{safe_name}_oral_dialog.md")
+                with open(dialog_md_file, "w", encoding="utf-8") as dmf:
+                    dmf.write(dialog_md)
+
+                # Render Markdown to HTML and include inside collapsible block
+                dialog_rendered = markdown.markdown(dialog_md, extensions=['tables', 'fenced_code'])
+                dialog_html = f"""
+<details>
+  <summary>Устная сессия — показать/скрыть</summary>
+  <div style="margin:10px 0;padding:10px;background:#f8f8f8;border-radius:6px;">{dialog_rendered}</div>
+</details>
+"""
+        except Exception:
+            dialog_html = ""
+
         full_html = f"""
 <html>
 <head>
@@ -296,14 +698,16 @@ h1,h2,h3,h4 {{ margin-top: 20px; }}
 table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
 table, th, td {{ border: 1px solid #333; padding: 6px; }}
 code {{ background-color: #f0f0f0; padding: 2px 4px; border-radius: 4px; }}
+        .oral-dialog {{ margin: 16px 0; padding: 12px; background: linear-gradient(180deg,#fff7e6,#fff); border-left:4px solid #ffb84d; border-radius:6px; }}
+        .oral-dialog h3 {{ margin-top:0; }}
 pre {{ background-color: #f9f9f9; padding: 10px; border-radius: 4px; overflow-x: auto; }}
 ul, ol {{ padding-left: 20px; }}
 </style>
 </head>
 <body>
 <h1>Итоговое заключение учителя для {name}</h1>
-<h2>Класс: {grade}</h2>
 {html_body}
+{dialog_html}
 </body>
 </html>
 """

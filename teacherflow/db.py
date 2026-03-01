@@ -21,20 +21,21 @@ class Database:
                 }
             },
             {
-                "Full Name": "Иван Петров",
-                "Login": "ivan_petrov",
-                "Password": "ivan",
+                "Full Name": "Dmitriy Turutin",
+                "Login": "dmitriy",
+                "Password": "asdfasdfasdf",
                 "Marks and exams": {
-                    "Math": [5, 4, 3, 4, 5],
-                    "Physics": [5, 4, 3, 4, 5],
-                    "English": [5, 4, 3, 4, 5],
-                    "History": [5, 4, 3, 4, 5],
-                    "Informatics": [3, 4, 3, 4, 3],
-                    "Russian language": [2, 4, 3, 4, 2]
+                    "Math": [4],
+                    "Fundamentals of Russian Statehood": [4],
+                    "English": [4],
+                    "History": [3],
+                    "Informatics": [5],
+                    "Programming": [5],
+                    "Philosophy": [5]
                 },
                 "Personal": {
                     "Class": 9,
-                    "Bio": "Люблю информатику, играю в шахматы на уровне гроссмейстера."
+                    "Bio": "Люблю математику и физику, играю в шахматы на уровне любителя."
                 }
             },
             {

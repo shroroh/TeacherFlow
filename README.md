@@ -54,6 +54,7 @@ If you want to use another LLM, you can set the `LLM_PROVIDER` environment varia
    ```
 
 3. Execute the script (either from root or as a package)
+
 ```bash
 # legacy entry point kept at project root
 python main.py --student-id ivan123 --no-cache
@@ -61,6 +62,30 @@ python main.py --student-id ivan123 --no-cache
 # or use the package namespace
 python -m teacherflow --student-id ivan123 --no-cache
 ```
+
+### 📋 Additional CLI Options
+The CLI now supports several extra flags to customize the behaviour:
+
+- `--course <course>` – specify the student's university course/year (e.g. `2` or `1st`).
+- `--major <major>` – supply the student's field of study or major (e.g. `Computer Science`).
+- `--no-oral` – skip generation of the oral Q&A dialogue and related assessment. Useful for fast runs or when the conversation is not needed.
+
+These values are written into `shared['student_data']` and can influence grading output.
+
+### 🗂️ Environment file precedence
+Configuration values may be stored in a `.env` file, but the program will also
+look for a project‑specific `.var` file in the current directory and load it
+first (without overriding existing variables). This makes it convenient to keep
+per-project credentials or settings separate from a global `.env`.
+
+### 📄 JSON output expectations
+All prompts to the LLM now explicitly request a fenced JSON block containing the
+structured result. The code includes a tolerant parser that can extract the first
+JSON object or YAML if necessary, but supplying a ` ```json {...} ``` ` block
+will maximise reliability.
+
+
+
 
 ## Deploy and launch on Colaba service
  ```bash
